@@ -817,6 +817,131 @@ describe("TelegramAdapter", () => {
     expect(parsedMessage.threadId).toBe(expected);
   });
 
+  it("keeps a captured regular supergroup reply thread on the chat thread", async () => {
+    // The two "regular supergroup reply thread" updates in sample-messages.md.
+    // Both carry message_thread_id 62, the bot message at the root of the
+    // reply thread, and neither has is_topic_message.
+    mockFetch.mockResolvedValueOnce(
+      telegramOk({
+        id: 8_000_000_001,
+        is_bot: true,
+        first_name: "Test Bot",
+        username: "testbot",
+      })
+    );
+
+    const adapter = createTelegramAdapter({
+      botToken: "token",
+      mode: "webhook",
+      logger: mockLogger,
+      userName: "testbot",
+      mentionOnReply: true,
+    });
+
+    const chat = createMockChat({ userName: "testbot" });
+    await adapter.initialize(chat);
+
+    const user = {
+      id: 100_000_001,
+      is_bot: false,
+      first_name: "Test User",
+      username: "testuser",
+      language_code: "en",
+    };
+    const group = {
+      id: -1_001_000_000_001,
+      title: "Test Group",
+      type: "supergroup",
+    };
+    const reply = {
+      message_id: 63,
+      from: user,
+      chat: group,
+      date: 1_793_192_673,
+      message_thread_id: 62,
+      reply_to_message: {
+        message_id: 62,
+        from: {
+          id: 8_000_000_001,
+          is_bot: true,
+          first_name: "Test Bot",
+          username: "testbot",
+        },
+        chat: group,
+        date: 1_793_172_648,
+        rich_message: {
+          blocks: [
+            {
+              type: "paragraph",
+              text: { type: "bold", text: "Daily summary" },
+            },
+            { type: "paragraph", text: "No meetings today." },
+            { type: "paragraph", text: "No new messages need a reply." },
+            {
+              type: "paragraph",
+              text: "Reply here to change tomorrow's summary.",
+            },
+          ],
+        },
+      },
+      text: "test",
+    };
+    const replyToReply = {
+      message_id: 64,
+      from: user,
+      chat: group,
+      date: 1_793_192_677,
+      message_thread_id: 62,
+      reply_to_message: {
+        message_id: 63,
+        from: user,
+        chat: group,
+        date: 1_793_192_673,
+        message_thread_id: 62,
+        text: "test",
+      },
+      text: "test 2",
+    };
+
+    for (const [updateId, message] of [
+      [312_744_904, reply],
+      [312_744_905, replyToReply],
+    ] as const) {
+      await adapter.handleWebhook(
+        new Request("https://example.com/webhook", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ update_id: updateId, message }),
+        })
+      );
+    }
+
+    const processMessage = chat.processMessage as ReturnType<typeof vi.fn>;
+    const calls = processMessage.mock.calls as [
+      unknown,
+      string,
+      { threadId: string; isMention?: boolean },
+    ][];
+    expect(
+      calls.map(([, threadId, parsed]) => ({
+        threadId,
+        parsedThreadId: parsed.threadId,
+        isMention: parsed.isMention,
+      }))
+    ).toEqual([
+      {
+        threadId: "telegram:-1001000000001",
+        parsedThreadId: "telegram:-1001000000001",
+        isMention: true,
+      },
+      {
+        threadId: "telegram:-1001000000001",
+        parsedThreadId: "telegram:-1001000000001",
+        isMention: false,
+      },
+    ]);
+  });
+
   it("deduplicates sequential and concurrent webhook updates", async () => {
     mockFetch.mockImplementation(() =>
       Promise.resolve(
